@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -39,10 +39,11 @@ import (
 	"k8s.io/kubernetes/pkg/api/v1"
 	"k8s.io/kubernetes/pkg/client/unversioned/fake"
 	"k8s.io/kubernetes/pkg/runtime"
+	"k8s.io/kubernetes/pkg/runtime/serializer/streaming"
 	utilerrors "k8s.io/kubernetes/pkg/util/errors"
 	utiltesting "k8s.io/kubernetes/pkg/util/testing"
 	"k8s.io/kubernetes/pkg/watch"
-	watchjson "k8s.io/kubernetes/pkg/watch/json"
+	"k8s.io/kubernetes/pkg/watch/versioned"
 )
 
 func stringBody(body string) io.ReadCloser {
@@ -51,7 +52,8 @@ func stringBody(body string) io.ReadCloser {
 
 func watchBody(events ...watch.Event) string {
 	buf := &bytes.Buffer{}
-	enc := watchjson.NewEncoder(buf, testapi.Default.Codec())
+	codec := testapi.Default.Codec()
+	enc := versioned.NewEncoder(streaming.NewEncoder(buf, codec), codec)
 	for _, e := range events {
 		enc.Encode(&e)
 	}
@@ -67,7 +69,7 @@ func fakeClient() ClientMapper {
 func fakeClientWith(testName string, t *testing.T, data map[string]string) ClientMapper {
 	return ClientMapperFunc(func(*meta.RESTMapping) (RESTClient, error) {
 		return &fake.RESTClient{
-			Codec: testapi.Default.Codec(),
+			NegotiatedSerializer: testapi.Default.NegotiatedSerializer(),
 			Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
 				p := req.URL.Path
 				q := req.URL.RawQuery
@@ -78,8 +80,11 @@ func fakeClientWith(testName string, t *testing.T, data map[string]string) Clien
 				if !ok {
 					t.Fatalf("%s: unexpected request: %s (%s)\n%#v", testName, p, req.URL, req)
 				}
+				header := http.Header{}
+				header.Set("Content-Type", runtime.ContentTypeJSON)
 				return &http.Response{
 					StatusCode: http.StatusOK,
+					Header:     header,
 					Body:       stringBody(body),
 				}, nil
 			}),
@@ -1226,7 +1231,7 @@ func TestHasNames(t *testing.T) {
 		{
 			args:            []string{"rc/foo", "bar"},
 			expectedHasName: false,
-			expectedError:   fmt.Errorf("when passing arguments in resource/name form, all arguments must include the resource"),
+			expectedError:   fmt.Errorf("there is no need to specify a resource type as a separate argument when passing arguments in resource/name form (e.g. 'resource.test get resource/<resource_name>' instead of 'resource.test get resource resource/<resource_name>'"),
 		},
 	}
 	for _, test := range tests {

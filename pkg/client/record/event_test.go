@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand"
+	"net/http"
 	"strconv"
 	"testing"
 	"time"
@@ -32,7 +33,6 @@ import (
 	k8sruntime "k8s.io/kubernetes/pkg/runtime"
 	"k8s.io/kubernetes/pkg/util"
 	"k8s.io/kubernetes/pkg/util/strategicpatch"
-	"net/http"
 )
 
 type testEventSink struct {
@@ -367,10 +367,10 @@ func TestEventf(t *testing.T) {
 		// validate event
 		if item.expectUpdate {
 			actualEvent := <-patchEvent
-			validateEvent(string(index), actualEvent, item.expect, t)
+			validateEvent(strconv.Itoa(index), actualEvent, item.expect, t)
 		} else {
 			actualEvent := <-createEvent
-			validateEvent(string(index), actualEvent, item.expect, t)
+			validateEvent(strconv.Itoa(index), actualEvent, item.expect, t)
 		}
 		// TODO: uncomment this after we upgrade to Go 1.6.1.
 		// logWatcher1.Stop()
@@ -618,10 +618,10 @@ func TestEventfNoNamespace(t *testing.T) {
 		// validate event
 		if item.expectUpdate {
 			actualEvent := <-patchEvent
-			validateEvent(string(index), actualEvent, item.expect, t)
+			validateEvent(strconv.Itoa(index), actualEvent, item.expect, t)
 		} else {
 			actualEvent := <-createEvent
-			validateEvent(string(index), actualEvent, item.expect, t)
+			validateEvent(strconv.Itoa(index), actualEvent, item.expect, t)
 		}
 
 		// TODO: uncomment this after we upgrade to Go 1.6.1.
@@ -898,10 +898,10 @@ func TestMultiSinkCache(t *testing.T) {
 		// validate event
 		if item.expectUpdate {
 			actualEvent := <-patchEvent
-			validateEvent(string(index), actualEvent, item.expect, t)
+			validateEvent(strconv.Itoa(index), actualEvent, item.expect, t)
 		} else {
 			actualEvent := <-createEvent
-			validateEvent(string(index), actualEvent, item.expect, t)
+			validateEvent(strconv.Itoa(index), actualEvent, item.expect, t)
 		}
 	}
 
@@ -914,10 +914,10 @@ func TestMultiSinkCache(t *testing.T) {
 		// validate event
 		if item.expectUpdate {
 			actualEvent := <-patchEvent2
-			validateEvent(string(index), actualEvent, item.expect, t)
+			validateEvent(strconv.Itoa(index), actualEvent, item.expect, t)
 		} else {
 			actualEvent := <-createEvent2
-			validateEvent(string(index), actualEvent, item.expect, t)
+			validateEvent(strconv.Itoa(index), actualEvent, item.expect, t)
 		}
 	}
 

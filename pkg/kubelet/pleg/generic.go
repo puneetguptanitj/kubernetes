@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@ package pleg
 
 import (
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/golang/glog"
@@ -25,7 +26,6 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/metrics"
 	"k8s.io/kubernetes/pkg/types"
 	"k8s.io/kubernetes/pkg/util"
-	"k8s.io/kubernetes/pkg/util/atomic"
 	"k8s.io/kubernetes/pkg/util/sets"
 	"k8s.io/kubernetes/pkg/util/wait"
 )
@@ -60,6 +60,9 @@ type GenericPLEG struct {
 	cache kubecontainer.Cache
 	// For testability.
 	clock util.Clock
+	// Pods that failed to have their status retrieved during a relist. These pods will be
+	// retried during the next relisting.
+	podsToReinspect map[types.UID]*kubecontainer.Pod
 }
 
 // plegContainerState has a one-to-one mapping to the
@@ -131,29 +134,25 @@ func (g *GenericPLEG) Healthy() (bool, error) {
 	return true, nil
 }
 
-func generateEvent(podID types.UID, cid string, oldState, newState plegContainerState) *PodLifecycleEvent {
+func generateEvents(podID types.UID, cid string, oldState, newState plegContainerState) []*PodLifecycleEvent {
 	if newState == oldState {
 		return nil
 	}
 	glog.V(4).Infof("GenericPLEG: %v/%v: %v -> %v", podID, cid, oldState, newState)
 	switch newState {
 	case plegContainerRunning:
-		return &PodLifecycleEvent{ID: podID, Type: ContainerStarted, Data: cid}
+		return []*PodLifecycleEvent{{ID: podID, Type: ContainerStarted, Data: cid}}
 	case plegContainerExited:
-		return &PodLifecycleEvent{ID: podID, Type: ContainerDied, Data: cid}
+		return []*PodLifecycleEvent{{ID: podID, Type: ContainerDied, Data: cid}}
 	case plegContainerUnknown:
-		return &PodLifecycleEvent{ID: podID, Type: ContainerChanged, Data: cid}
+		return []*PodLifecycleEvent{{ID: podID, Type: ContainerChanged, Data: cid}}
 	case plegContainerNonExistent:
-		// We report "ContainerDied" when container was stopped OR removed. We
-		// may want to distinguish the two cases in the future.
 		switch oldState {
 		case plegContainerExited:
 			// We already reported that the container died before.
-			return &PodLifecycleEvent{ID: podID, Type: ContainerRemoved, Data: cid}
+			return []*PodLifecycleEvent{{ID: podID, Type: ContainerRemoved, Data: cid}}
 		default:
-			// TODO: We may want to generate a ContainerRemoved event as well.
-			// It's ok now because no one relies on the ContainerRemoved event.
-			return &PodLifecycleEvent{ID: podID, Type: ContainerDied, Data: cid}
+			return []*PodLifecycleEvent{{ID: podID, Type: ContainerDied, Data: cid}, {ID: podID, Type: ContainerRemoved, Data: cid}}
 		}
 	default:
 		panic(fmt.Sprintf("unrecognized container state: %v", newState))
@@ -205,9 +204,16 @@ func (g *GenericPLEG) relist() {
 		// Get all containers in the old and the new pod.
 		allContainers := getContainersFromPods(oldPod, pod)
 		for _, container := range allContainers {
-			e := computeEvent(oldPod, pod, &container.ID)
-			updateEvents(eventsByPodID, e)
+			events := computeEvents(oldPod, pod, &container.ID)
+			for _, e := range events {
+				updateEvents(eventsByPodID, e)
+			}
 		}
+	}
+
+	var needsReinspection map[types.UID]*kubecontainer.Pod
+	if g.cacheEnabled() {
+		needsReinspection = make(map[types.UID]*kubecontainer.Pod)
 	}
 
 	// If there are events associated with a pod, we should update the
@@ -226,14 +232,23 @@ func (g *GenericPLEG) relist() {
 			// parallelize if needed.
 			if err := g.updateCache(pod, pid); err != nil {
 				glog.Errorf("PLEG: Ignoring events for pod %s/%s: %v", pod.Name, pod.Namespace, err)
+
+				// make sure we try to reinspect the pod during the next relisting
+				needsReinspection[pid] = pod
+
 				continue
+			} else if _, found := g.podsToReinspect[pid]; found {
+				// this pod was in the list to reinspect and we did so because it had events, so remove it
+				// from the list (we don't want the reinspection code below to inspect it a second time in
+				// this relist execution)
+				delete(g.podsToReinspect, pid)
 			}
 		}
 		// Update the internal storage and send out the events.
 		g.podRecords.update(pid)
 		for i := range events {
 			// Filter out events that are not reliable and no other components use yet.
-			if events[i].Type == ContainerChanged || events[i].Type == ContainerRemoved {
+			if events[i].Type == ContainerChanged {
 				continue
 			}
 			g.eventChannel <- events[i]
@@ -241,10 +256,24 @@ func (g *GenericPLEG) relist() {
 	}
 
 	if g.cacheEnabled() {
+		// reinspect any pods that failed inspection during the previous relist
+		if len(g.podsToReinspect) > 0 {
+			glog.V(5).Infof("GenericPLEG: Reinspecting pods that previously failed inspection")
+			for pid, pod := range g.podsToReinspect {
+				if err := g.updateCache(pod, pid); err != nil {
+					glog.Errorf("PLEG: pod %s/%s failed reinspection: %v", pod.Name, pod.Namespace, err)
+					needsReinspection[pid] = pod
+				}
+			}
+		}
+
 		// Update the cache timestamp.  This needs to happen *after*
 		// all pods have been properly updated in the cache.
 		g.cache.UpdateTime(timestamp)
 	}
+
+	// make sure we retain the list of pods that need reinspecting the next time relist is called
+	g.podsToReinspect = needsReinspection
 }
 
 func getContainersFromPods(pods ...*kubecontainer.Pod) []*kubecontainer.Container {
@@ -266,7 +295,7 @@ func getContainersFromPods(pods ...*kubecontainer.Pod) []*kubecontainer.Containe
 	return containers
 }
 
-func computeEvent(oldPod, newPod *kubecontainer.Pod, cid *kubecontainer.ContainerID) *PodLifecycleEvent {
+func computeEvents(oldPod, newPod *kubecontainer.Pod, cid *kubecontainer.ContainerID) []*PodLifecycleEvent {
 	var pid types.UID
 	if oldPod != nil {
 		pid = oldPod.ID
@@ -275,7 +304,7 @@ func computeEvent(oldPod, newPod *kubecontainer.Pod, cid *kubecontainer.Containe
 	}
 	oldState := getContainerState(oldPod, cid)
 	newState := getContainerState(newPod, cid)
-	return generateEvent(pid, cid.ID, oldState, newState)
+	return generateEvents(pid, cid.ID, oldState, newState)
 }
 
 func (g *GenericPLEG) cacheEnabled() bool {

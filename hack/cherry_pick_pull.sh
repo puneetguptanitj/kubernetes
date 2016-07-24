@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2015 The Kubernetes Authors All rights reserved.
+# Copyright 2015 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -29,7 +29,7 @@ declare -r STARTINGBRANCH=$(git symbolic-ref --short HEAD)
 declare -r REBASEMAGIC="${KUBE_ROOT}/.git/rebase-apply"
 
 if [[ -z ${GITHUB_USER:-} ]]; then
-  echo "Please export GITHUB_USER=<your-user>"
+  echo "Please export GITHUB_USER=<your-user> (or GH organization, if that's where your fork lives)"
   exit 1
 fi
 
@@ -139,7 +139,7 @@ gitamcleanup=false
 
 function make-a-pr() {
   local rel="$(basename "${BRANCH}")"
-  echo "+++ Creating a pull request on github"
+  echo "+++ Creating a pull request on GitHub at ${GITHUB_USER}:${NEWBRANCH}"
 
   # This looks like an unnecessary use of a tmpfile, but it avoids
   # https://github.com/github/hub/issues/976 Otherwise stdin is stolen

@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors All rights reserved.
+Copyright 2016 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@ limitations under the License.
 package rest
 
 import (
-	"k8s.io/kubernetes/cmd/libs/go2idl/client-gen/testdata/apis/testgroup.k8s.io"
+	"k8s.io/kubernetes/cmd/libs/go2idl/client-gen/test_apis/testgroup.k8s.io"
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/fields"
 	"k8s.io/kubernetes/pkg/labels"
@@ -38,7 +38,7 @@ func NewREST(s storage.Interface, storageDecorator generic.StorageDecorator) *RE
 	// Usually you should reuse your RESTCreateStrategy.
 	strategy := &NotNamespaceScoped{}
 	storageInterface := storageDecorator(
-		s, 100, &testgroup.TestType{}, prefix, strategy, newListFunc)
+		s, 100, &testgroup.TestType{}, prefix, strategy, newListFunc, storage.NoTriggerPublisher)
 	store := &registry.Store{
 		NewFunc: func() runtime.Object { return &testgroup.TestType{} },
 		// NewListFunc returns an object capable of storing results of an etcd list.

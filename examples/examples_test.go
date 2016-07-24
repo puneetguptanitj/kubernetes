@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -170,9 +170,6 @@ func walkJSONFiles(inDir string, fn func(name, path string, data []byte)) error 
 
 func TestExampleObjectSchemas(t *testing.T) {
 	cases := map[string]map[string]runtime.Object{
-		"../cmd/integration": {
-			"v1-controller": &api.ReplicationController{},
-		},
 		"../examples/guestbook": {
 			"frontend-deployment":     &extensions.Deployment{},
 			"redis-slave-deployment":  &extensions.Deployment{},
@@ -223,10 +220,10 @@ func TestExampleObjectSchemas(t *testing.T) {
 			"pod":       &api.Pod{},
 			"service":   &api.Service{},
 		},
-		"../examples/iscsi": {
+		"../examples/volumes/iscsi": {
 			"iscsi": &api.Pod{},
 		},
-		"../examples/glusterfs": {
+		"../examples/volumes/glusterfs": {
 			"glusterfs-pod":       &api.Pod{},
 			"glusterfs-endpoints": &api.Endpoints{},
 			"glusterfs-service":   &api.Service{},
@@ -252,14 +249,14 @@ func TestExampleObjectSchemas(t *testing.T) {
 			"scheduler-policy-config":               &schedulerapi.Policy{},
 			"scheduler-policy-config-with-extender": &schedulerapi.Policy{},
 		},
-		"../examples/rbd/secret": {
+		"../examples/volumes/rbd/secret": {
 			"ceph-secret": &api.Secret{},
 		},
-		"../examples/rbd": {
+		"../examples/volumes/rbd": {
 			"rbd":             &api.Pod{},
 			"rbd-with-secret": &api.Pod{},
 		},
-		"../examples/cassandra": {
+		"../examples/storage/cassandra": {
 			"cassandra-daemonset":  &extensions.DaemonSet{},
 			"cassandra-controller": &api.ReplicationController{},
 			"cassandra-service":    &api.Service{},
@@ -292,7 +289,7 @@ func TestExampleObjectSchemas(t *testing.T) {
 		"../examples/explorer": {
 			"pod": &api.Pod{},
 		},
-		"../examples/hazelcast": {
+		"../examples/storage/hazelcast": {
 			"hazelcast-controller": &api.ReplicationController{},
 			"hazelcast-service":    &api.Service{},
 		},
@@ -322,7 +319,7 @@ func TestExampleObjectSchemas(t *testing.T) {
 			"mysql-deployment":     &api.Service{},
 			"wordpress-deployment": &api.Service{},
 		},
-		"../examples/nfs": {
+		"../examples/volumes/nfs": {
 			"nfs-busybox-rc":     &api.ReplicationController{},
 			"nfs-server-rc":      &api.ReplicationController{},
 			"nfs-server-service": &api.Service{},
@@ -333,7 +330,6 @@ func TestExampleObjectSchemas(t *testing.T) {
 		},
 		"../docs/user-guide/node-selection": {
 			"pod": &api.Pod{},
-			"pod-with-node-affinity": &api.Pod{},
 		},
 		"../examples/openshift-origin": {
 			"openshift-origin-namespace": &api.Namespace{},
@@ -349,7 +345,7 @@ func TestExampleObjectSchemas(t *testing.T) {
 			"phabricator-controller": &api.ReplicationController{},
 			"phabricator-service":    &api.Service{},
 		},
-		"../examples/redis": {
+		"../examples/storage/redis": {
 			"redis-controller":          &api.ReplicationController{},
 			"redis-master":              &api.Pod{},
 			"redis-proxy":               &api.Pod{},
@@ -361,7 +357,7 @@ func TestExampleObjectSchemas(t *testing.T) {
 			"limits":    &api.LimitRange{},
 			"quota":     &api.ResourceQuota{},
 		},
-		"../examples/rethinkdb": {
+		"../examples/storage/rethinkdb": {
 			"admin-pod":      &api.Pod{},
 			"admin-service":  &api.Service{},
 			"driver-service": &api.Service{},
@@ -394,26 +390,18 @@ func TestExampleObjectSchemas(t *testing.T) {
 			"zookeeper-service":       &api.Service{},
 			"zookeeper":               &api.Pod{},
 		},
-		"../examples/cephfs/": {
+		"../examples/volumes/cephfs/": {
 			"cephfs":             &api.Pod{},
 			"cephfs-with-secret": &api.Pod{},
 		},
-		"../examples/fibre_channel": {
+		"../examples/volumes/fibre_channel": {
 			"fc": &api.Pod{},
 		},
 		"../examples/javaweb-tomcat-sidecar": {
 			"javaweb":   &api.Pod{},
 			"javaweb-2": &api.Pod{},
 		},
-		"../examples/job/work-queue-1": {
-			"job": &batch.Job{},
-		},
-		"../examples/job/work-queue-2": {
-			"redis-pod":     &api.Pod{},
-			"redis-service": &api.Service{},
-			"job":           &batch.Job{},
-		},
-		"../examples/azure_file": {
+		"../examples/volumes/azure_file": {
 			"azure": &api.Pod{},
 		},
 	}
@@ -490,7 +478,7 @@ func TestReadme(t *testing.T) {
 	}{
 		{"../README.md", []runtime.Object{&api.Pod{}}},
 		{"../docs/user-guide/walkthrough/README.md", []runtime.Object{&api.Pod{}}},
-		{"../examples/iscsi/README.md", []runtime.Object{&api.Pod{}}},
+		{"../examples/volumes/iscsi/README.md", []runtime.Object{&api.Pod{}}},
 	}
 
 	for _, path := range paths {

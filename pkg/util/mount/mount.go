@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,6 +19,8 @@ limitations under the License.
 package mount
 
 import (
+	"path/filepath"
+
 	"github.com/golang/glog"
 	"k8s.io/kubernetes/pkg/util/exec"
 )
@@ -36,6 +38,11 @@ type Interface interface {
 	// IsLikelyNotMountPoint determines if a directory is a mountpoint.
 	// It should return ErrNotExist when the directory does not exist.
 	IsLikelyNotMountPoint(file string) (bool, error)
+	// DeviceOpened determines if the device is in use elsewhere
+	// on the system, i.e. still mounted.
+	DeviceOpened(pathname string) (bool, error)
+	// PathIsDevice determines if a path is a device.
+	PathIsDevice(pathname string) (bool, error)
 }
 
 // This represents a single line in /proc/mounts or /etc/fstab.
@@ -86,8 +93,13 @@ func GetMountRefs(mounter Interface, mountPath string) ([]string, error) {
 
 	// Find the device name.
 	deviceName := ""
+	// If mountPath is symlink, need get its target path.
+	slTarget, err := filepath.EvalSymlinks(mountPath)
+	if err != nil {
+		slTarget = mountPath
+	}
 	for i := range mps {
-		if mps[i].Path == mountPath {
+		if mps[i].Path == slTarget {
 			deviceName = mps[i].Device
 			break
 		}
@@ -99,7 +111,7 @@ func GetMountRefs(mounter Interface, mountPath string) ([]string, error) {
 		glog.Warningf("could not determine device for path: %q", mountPath)
 	} else {
 		for i := range mps {
-			if mps[i].Device == deviceName && mps[i].Path != mountPath {
+			if mps[i].Device == deviceName && mps[i].Path != slTarget {
 				refs = append(refs, mps[i].Path)
 			}
 		}
@@ -118,8 +130,13 @@ func GetDeviceNameFromMount(mounter Interface, mountPath string) (string, int, e
 	// Find the device name.
 	// FIXME if multiple devices mounted on the same mount path, only the first one is returned
 	device := ""
+	// If mountPath is symlink, need get its target path.
+	slTarget, err := filepath.EvalSymlinks(mountPath)
+	if err != nil {
+		slTarget = mountPath
+	}
 	for i := range mps {
-		if mps[i].Path == mountPath {
+		if mps[i].Path == slTarget {
 			device = mps[i].Device
 			break
 		}

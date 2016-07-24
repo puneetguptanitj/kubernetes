@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -34,12 +34,12 @@ import (
 )
 
 type testObject struct {
-	gvk *unversioned.GroupVersionKind
+	gvk unversioned.GroupVersionKind
 }
 
-func (d *testObject) GetObjectKind() unversioned.ObjectKind                 { return d }
-func (d *testObject) SetGroupVersionKind(gvk *unversioned.GroupVersionKind) { d.gvk = gvk }
-func (d *testObject) GroupVersionKind() *unversioned.GroupVersionKind       { return d.gvk }
+func (d *testObject) GetObjectKind() unversioned.ObjectKind                { return d }
+func (d *testObject) SetGroupVersionKind(gvk unversioned.GroupVersionKind) { d.gvk = gvk }
+func (d *testObject) GroupVersionKind() unversioned.GroupVersionKind       { return d.gvk }
 
 type testMarshalable struct {
 	testObject
@@ -106,7 +106,7 @@ func TestEncode(t *testing.T) {
 		0x22, 0x00, // content-encoding
 	}
 	obj2 := &testMarshalable{
-		testObject: testObject{gvk: &unversioned.GroupVersionKind{Kind: "test", Group: "other", Version: "version"}},
+		testObject: testObject{gvk: unversioned.GroupVersionKind{Kind: "test", Group: "other", Version: "version"}},
 		data:       []byte{0x01, 0x02, 0x03},
 	}
 	wire2 := []byte{
@@ -205,7 +205,7 @@ func TestDecode(t *testing.T) {
 		0x0a, 0x15,
 		0x0a, 0x0d, 0x6f, 0x74, 0x68, 0x65, 0x72, 0x2f, 0x76, 0x65, 0x72, 0x73, 0x69, 0x6f, 0x6e, // apiversion
 		0x12, 0x04, 0x74, 0x65, 0x73, 0x74, // kind
-		0x12, 0x03, 0x01, 0x02, 0x03, // data
+		0x12, 0x07, 0x6b, 0x38, 0x73, 0x00, 0x01, 0x02, 0x03, // data
 		0x1a, 0x00, // content-type
 		0x22, 0x00, // content-encoding
 	}
@@ -227,8 +227,7 @@ func TestDecode(t *testing.T) {
 		},
 		{
 			obj: &runtime.Unknown{
-				ContentType: "application/protobuf",
-				Raw:         []byte{},
+				Raw: []byte{},
 			},
 			data: wire1,
 		},
@@ -238,8 +237,9 @@ func TestDecode(t *testing.T) {
 					APIVersion: "other/version",
 					Kind:       "test",
 				},
+				// content type is set because the prefix matches the content
 				ContentType: "application/protobuf",
-				Raw:         []byte{0x01, 0x02, 0x03},
+				Raw:         []byte{0x6b, 0x38, 0x73, 0x00, 0x01, 0x02, 0x03},
 			},
 			data: wire2,
 		},
@@ -297,6 +297,18 @@ func TestDecodeObjects(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	unk2 := &runtime.Unknown{
+		TypeMeta: runtime.TypeMeta{Kind: "Pod", APIVersion: "v1"},
+	}
+	wire2 := make([]byte, len(wire1)*2)
+	n, err := unk2.NestedMarshalTo(wire2, obj1, uint64(obj1.Size()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != len(wire1) || !bytes.Equal(wire1, wire2[:n]) {
+		t.Fatalf("unexpected wire:\n%s", hex.Dump(wire2[:n]))
+	}
+
 	wire1 = append([]byte{0x6b, 0x38, 0x73, 0x00}, wire1...)
 
 	testCases := []struct {
@@ -311,7 +323,7 @@ func TestDecodeObjects(t *testing.T) {
 	}
 
 	for i, test := range testCases {
-		s := protobuf.NewSerializer(api.Scheme, runtime.ObjectTyperToTyper(api.Scheme), "application/protobuf")
+		s := protobuf.NewSerializer(api.Scheme, api.Scheme, "application/protobuf")
 		obj, err := runtime.Decode(s, test.data)
 
 		switch {

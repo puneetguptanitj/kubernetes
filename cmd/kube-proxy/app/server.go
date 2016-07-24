@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,6 +24,7 @@ import (
 	"net"
 	"net/http"
 	_ "net/http/pprof"
+	"runtime"
 	"strconv"
 	"time"
 
@@ -150,7 +151,7 @@ func NewProxyServerDefault(config *options.ProxyServerConfig) (*ProxyServer, err
 	var oomAdjuster *oom.OOMAdjuster
 	if config.OOMScoreAdj != nil {
 		oomAdjuster = oom.NewOOMAdjuster()
-		if err := oomAdjuster.ApplyOOMScoreAdj(0, *config.OOMScoreAdj); err != nil {
+		if err := oomAdjuster.ApplyOOMScoreAdj(0, int(*config.OOMScoreAdj)); err != nil {
 			glog.V(2).Info(err)
 		}
 	}
@@ -181,7 +182,7 @@ func NewProxyServerDefault(config *options.ProxyServerConfig) (*ProxyServer, err
 	kubeconfig.ContentType = config.ContentType
 	// Override kubeconfig qps/burst settings from flags
 	kubeconfig.QPS = config.KubeAPIQPS
-	kubeconfig.Burst = config.KubeAPIBurst
+	kubeconfig.Burst = int(config.KubeAPIBurst)
 
 	client, err := kubeclient.New(kubeconfig)
 	if err != nil {
@@ -204,7 +205,7 @@ func NewProxyServerDefault(config *options.ProxyServerConfig) (*ProxyServer, err
 			return nil, fmt.Errorf("Unable to read IPTablesMasqueradeBit from config")
 		}
 
-		proxierIptables, err := iptables.NewProxier(iptInterface, execer, config.IPTablesSyncPeriod.Duration, config.MasqueradeAll, *config.IPTablesMasqueradeBit, config.ClusterCIDR)
+		proxierIptables, err := iptables.NewProxier(iptInterface, execer, config.IPTablesSyncPeriod.Duration, config.MasqueradeAll, int(*config.IPTablesMasqueradeBit), config.ClusterCIDR)
 		if err != nil {
 			glog.Fatalf("Unable to create proxier: %v", err)
 		}
@@ -289,7 +290,7 @@ func (s *ProxyServer) Run() error {
 		})
 		configz.InstallHandler(http.DefaultServeMux)
 		go wait.Until(func() {
-			err := http.ListenAndServe(s.Config.HealthzBindAddress+":"+strconv.Itoa(s.Config.HealthzPort), nil)
+			err := http.ListenAndServe(s.Config.HealthzBindAddress+":"+strconv.Itoa(int(s.Config.HealthzPort)), nil)
 			if err != nil {
 				glog.Errorf("Starting health server failed: %v", err)
 			}
@@ -298,9 +299,24 @@ func (s *ProxyServer) Run() error {
 
 	// Tune conntrack, if requested
 	if s.Conntracker != nil {
-		if s.Config.ConntrackMax > 0 {
-			if err := s.Conntracker.SetMax(s.Config.ConntrackMax); err != nil {
-				return err
+		max, err := getConntrackMax(s.Config)
+		if err != nil {
+			return err
+		}
+		if max > 0 {
+			err := s.Conntracker.SetMax(max)
+			if err != nil {
+				if err != readOnlySysFSError {
+					return err
+				}
+				// readOnlySysFSError is caused by a known docker issue (https://github.com/docker/docker/issues/24000),
+				// the only remediation we know is to restart the docker daemon.
+				// Here we'll send an node event with specific reason and message, the
+				// administrator should decide whether and how to handle this issue,
+				// whether to drain the node and restart docker.
+				// TODO(random-liu): Remove this when the docker bug is fixed.
+				const message = "DOCKER RESTART NEEDED (docker issue #24000): /sys is read-only: can't raise conntrack limits, problems may arise later."
+				s.Recorder.Eventf(s.Config.NodeRef, api.EventTypeWarning, err.Error(), message)
 			}
 		}
 		if s.Config.ConntrackTCPEstablishedTimeout.Duration > 0 {
@@ -316,6 +332,18 @@ func (s *ProxyServer) Run() error {
 	// Just loop forever for now...
 	s.Proxier.SyncLoop()
 	return nil
+}
+
+func getConntrackMax(config *options.ProxyServerConfig) (int, error) {
+	if config.ConntrackMax > 0 && config.ConntrackMaxPerCore > 0 {
+		return -1, fmt.Errorf("invalid config: ConntrackMax and ConntrackMaxPerCore are mutually exclusive")
+	}
+	if config.ConntrackMax > 0 {
+		return int(config.ConntrackMax), nil
+	} else if config.ConntrackMaxPerCore > 0 {
+		return (int(config.ConntrackMaxPerCore) * runtime.NumCPU()), nil
+	}
+	return 0, nil
 }
 
 type nodeGetter interface {

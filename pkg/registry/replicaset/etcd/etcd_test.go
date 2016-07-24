@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors All rights reserved.
+Copyright 2016 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@ import (
 
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/api/errors"
+	"k8s.io/kubernetes/pkg/api/rest"
 	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/apis/extensions"
 	"k8s.io/kubernetes/pkg/fields"
@@ -162,7 +163,7 @@ func TestGenerationNumber(t *testing.T) {
 
 	// Updates to spec should increment the generation number
 	storedRS.Spec.Replicas += 1
-	storage.ReplicaSet.Update(ctx, storedRS)
+	storage.ReplicaSet.Update(ctx, storedRS.Name, rest.DefaultUpdatedObjectInfo(storedRS, api.Scheme))
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -177,7 +178,7 @@ func TestGenerationNumber(t *testing.T) {
 
 	// Updates to status should not increment either spec or status generation numbers
 	storedRS.Status.Replicas += 1
-	storage.ReplicaSet.Update(ctx, storedRS)
+	storage.ReplicaSet.Update(ctx, storedRS.Name, rest.DefaultUpdatedObjectInfo(storedRS, api.Scheme))
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -295,11 +296,11 @@ func TestScaleUpdate(t *testing.T) {
 			Namespace: api.NamespaceDefault,
 		},
 		Spec: extensions.ScaleSpec{
-			Replicas: replicas,
+			Replicas: int32(replicas),
 		},
 	}
 
-	if _, _, err := storage.Scale.Update(ctx, &update); err != nil {
+	if _, _, err := storage.Scale.Update(ctx, update.Name, rest.DefaultUpdatedObjectInfo(&update, api.Scheme)); err != nil {
 		t.Fatalf("error updating scale %v: %v", update, err)
 	}
 
@@ -308,14 +309,14 @@ func TestScaleUpdate(t *testing.T) {
 		t.Fatalf("error fetching scale for %s: %v", name, err)
 	}
 	scale := obj.(*extensions.Scale)
-	if scale.Spec.Replicas != replicas {
+	if scale.Spec.Replicas != int32(replicas) {
 		t.Errorf("wrong replicas count expected: %d got: %d", replicas, scale.Spec.Replicas)
 	}
 
 	update.ResourceVersion = rs.ResourceVersion
 	update.Spec.Replicas = 15
 
-	if _, _, err = storage.Scale.Update(ctx, &update); err != nil && !errors.IsConflict(err) {
+	if _, _, err = storage.Scale.Update(ctx, update.Name, rest.DefaultUpdatedObjectInfo(&update, api.Scheme)); err != nil && !errors.IsConflict(err) {
 		t.Fatalf("unexpected error, expecting an update conflict but got %v", err)
 	}
 }
@@ -339,7 +340,7 @@ func TestStatusUpdate(t *testing.T) {
 		},
 	}
 
-	if _, _, err := storage.Status.Update(ctx, &update); err != nil {
+	if _, _, err := storage.Status.Update(ctx, update.Name, rest.DefaultUpdatedObjectInfo(&update, api.Scheme)); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	obj, err := storage.ReplicaSet.Get(ctx, "foo")

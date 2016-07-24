@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors All rights reserved.
+Copyright 2016 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -51,7 +51,7 @@ var _ = framework.KubeDescribe("ReplicaSet", func() {
 // image serves its hostname which is checked for each replica.
 func ReplicaSetServeImageOrFail(f *framework.Framework, test string, image string) {
 	name := "my-hostname-" + test + "-" + string(util.NewUUID())
-	replicas := 2
+	replicas := int32(2)
 
 	// Create a ReplicaSet for a service that serves its hostname.
 	// The source for the Docker containter kubernetes/serve_hostname is

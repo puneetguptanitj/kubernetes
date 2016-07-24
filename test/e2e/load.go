@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -44,6 +44,10 @@ const (
 	smallRCBatchSize  = 30
 	mediumRCBatchSize = 5
 	bigRCBatchSize    = 1
+	// We start RCs/Services/pods/... in different namespace in this test.
+	// nodeCountPerNamespace determines how many namespaces we will be using
+	// depending on the number of nodes in the underlying cluster.
+	nodeCountPerNamespace = 250
 )
 
 // This test suite can take a long time to run, so by default it is added to
@@ -55,6 +59,7 @@ var _ = framework.KubeDescribe("Load capacity", func() {
 	var nodeCount int
 	var ns string
 	var configs []*framework.RCConfig
+	var namespaces []*api.Namespace
 
 	// Gathers metrics before teardown
 	// TODO add flag that allows to skip cleanup on failure
@@ -71,14 +76,19 @@ var _ = framework.KubeDescribe("Load capacity", func() {
 		ClientQPS:   50,
 		ClientBurst: 100,
 	}
-	f := framework.NewFramework("load", options)
+	f := framework.NewFramework("load", options, nil)
 	f.NamespaceDeletionTimeout = time.Hour
 
 	BeforeEach(func() {
 		c = f.Client
 
+		// In large clusters we may get to this point but still have a bunch
+		// of nodes without Routes created. Since this would make a node
+		// unschedulable, we need to wait until all of them are schedulable.
+		framework.ExpectNoError(framework.WaitForAllNodesSchedulable(c))
+
 		ns = f.Namespace.Name
-		nodes := framework.ListSchedulableNodesOrDie(c)
+		nodes := framework.GetReadySchedulableNodesOrDie(c)
 		nodeCount = len(nodes.Items)
 		Expect(nodeCount).NotTo(BeZero())
 
@@ -113,8 +123,11 @@ var _ = framework.KubeDescribe("Load capacity", func() {
 		itArg := testArg
 
 		It(name, func() {
+			// Create a number of namespaces.
+			namespaces = createNamespaces(f, nodeCount, itArg.podsPerNode)
+
 			totalPods := itArg.podsPerNode * nodeCount
-			configs = generateRCConfigs(totalPods, itArg.image, itArg.command, c, ns)
+			configs = generateRCConfigs(totalPods, itArg.image, itArg.command, c, namespaces)
 			var services []*api.Service
 			// Read the environment variable to see if we want to create services
 			createServices := os.Getenv("CREATE_SERVICES")
@@ -122,11 +135,21 @@ var _ = framework.KubeDescribe("Load capacity", func() {
 				framework.Logf("Creating services")
 				services := generateServicesForConfigs(configs)
 				for _, service := range services {
-					_, err := c.Services(ns).Create(service)
+					_, err := c.Services(service.Namespace).Create(service)
 					framework.ExpectNoError(err)
 				}
 			} else {
 				framework.Logf("Skipping service creation")
+			}
+
+			// We assume a default throughput of 10 pods/second throughput.
+			// We may want to revisit it in the future.
+			// However, this can be overriden by LOAD_TEST_THROUGHPUT env var.
+			throughput := 10
+			if throughputEnv := os.Getenv("LOAD_TEST_THROUGHPUT"); throughputEnv != "" {
+				if newThroughput, err := strconv.Atoi(throughputEnv); err == nil {
+					throughput = newThroughput
+				}
 			}
 
 			// Simulate lifetime of RC:
@@ -142,17 +165,17 @@ var _ = framework.KubeDescribe("Load capacity", func() {
 
 			// We would like to spread creating replication controllers over time
 			// to make it possible to create/schedule them in the meantime.
-			// Currently we assume 10 pods/second average throughput.
+			// Currently we assume <throughput> pods/second average throughput.
 			// We may want to revisit it in the future.
-			creatingTime := time.Duration(totalPods/10) * time.Second
+			creatingTime := time.Duration(totalPods/throughput) * time.Second
 			createAllRC(configs, creatingTime)
 			By("============================================================================")
 
 			// We would like to spread scaling replication controllers over time
 			// to make it possible to create/schedule & delete them in the meantime.
-			// Currently we assume that 10 pods/second average throughput.
+			// Currently we assume that <throughput> pods/second average throughput.
 			// The expected number of created/deleted pods is less than totalPods/3.
-			scalingTime := time.Duration(totalPods/30) * time.Second
+			scalingTime := time.Duration(totalPods/(3*throughput)) * time.Second
 			scaleAllRC(configs, scalingTime)
 			By("============================================================================")
 
@@ -160,9 +183,9 @@ var _ = framework.KubeDescribe("Load capacity", func() {
 			By("============================================================================")
 
 			// Cleanup all created replication controllers.
-			// Currently we assume 5 pods/second average deletion throughput.
+			// Currently we assume <throughput> pods/second average deletion throughput.
 			// We may want to revisit it in the future.
-			deletingTime := time.Duration(totalPods/5) * time.Second
+			deletingTime := time.Duration(totalPods/throughput) * time.Second
 			deleteAllRC(configs, deletingTime)
 			if createServices == "true" {
 				for _, service := range services {
@@ -174,6 +197,17 @@ var _ = framework.KubeDescribe("Load capacity", func() {
 		})
 	}
 })
+
+func createNamespaces(f *framework.Framework, nodeCount, podsPerNode int) []*api.Namespace {
+	namespaceCount := (nodeCount + nodeCountPerNamespace - 1) / nodeCountPerNamespace
+	namespaces := []*api.Namespace{}
+	for i := 1; i <= namespaceCount; i++ {
+		namespace, err := f.CreateNamespace(fmt.Sprintf("load-%d-nodepods-%d", podsPerNode, i), nil)
+		framework.ExpectNoError(err)
+		namespaces = append(namespaces, namespace)
+	}
+	return namespaces
+}
 
 func computeRCCounts(total int) (int, int, int) {
 	// Small RCs owns ~0.5 of total number of pods, medium and big RCs ~0.25 each.
@@ -189,24 +223,24 @@ func computeRCCounts(total int) (int, int, int) {
 	return smallRCCount, mediumRCCount, bigRCCount
 }
 
-func generateRCConfigs(totalPods int, image string, command []string, c *client.Client, ns string) []*framework.RCConfig {
+func generateRCConfigs(totalPods int, image string, command []string, c *client.Client, nss []*api.Namespace) []*framework.RCConfig {
 	configs := make([]*framework.RCConfig, 0)
 
 	smallRCCount, mediumRCCount, bigRCCount := computeRCCounts(totalPods)
-	configs = append(configs, generateRCConfigsForGroup(c, ns, smallRCGroupName, smallRCSize, smallRCCount, image, command)...)
-	configs = append(configs, generateRCConfigsForGroup(c, ns, mediumRCGroupName, mediumRCSize, mediumRCCount, image, command)...)
-	configs = append(configs, generateRCConfigsForGroup(c, ns, bigRCGroupName, bigRCSize, bigRCCount, image, command)...)
+	configs = append(configs, generateRCConfigsForGroup(c, nss, smallRCGroupName, smallRCSize, smallRCCount, image, command)...)
+	configs = append(configs, generateRCConfigsForGroup(c, nss, mediumRCGroupName, mediumRCSize, mediumRCCount, image, command)...)
+	configs = append(configs, generateRCConfigsForGroup(c, nss, bigRCGroupName, bigRCSize, bigRCCount, image, command)...)
 
 	return configs
 }
 
-func generateRCConfigsForGroup(c *client.Client, ns, groupName string, size, count int, image string, command []string) []*framework.RCConfig {
+func generateRCConfigsForGroup(c *client.Client, nss []*api.Namespace, groupName string, size, count int, image string, command []string) []*framework.RCConfig {
 	configs := make([]*framework.RCConfig, 0, count)
 	for i := 1; i <= count; i++ {
 		config := &framework.RCConfig{
 			Client:     c,
 			Name:       groupName + "-" + strconv.Itoa(i),
-			Namespace:  ns,
+			Namespace:  nss[i%len(nss)].Name,
 			Timeout:    10 * time.Minute,
 			Image:      image,
 			Command:    command,
@@ -226,7 +260,8 @@ func generateServicesForConfigs(configs []*framework.RCConfig) []*api.Service {
 		labels := map[string]string{"name": config.Name}
 		service := &api.Service{
 			ObjectMeta: api.ObjectMeta{
-				Name: serviceName,
+				Name:      serviceName,
+				Namespace: config.Namespace,
 			},
 			Spec: api.ServiceSpec{
 				Selector: labels,

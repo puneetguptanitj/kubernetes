@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -87,7 +87,7 @@ func makeSimilarEvents(num int, template api.Event, messagePrefix string) []api.
 }
 
 func setCount(event api.Event, count int) api.Event {
-	event.Count = count
+	event.Count = int32(count)
 	return event
 }
 

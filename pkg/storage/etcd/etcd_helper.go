@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,8 +19,6 @@ package etcd
 import (
 	"errors"
 	"fmt"
-	"net"
-	"net/http"
 	"path"
 	"reflect"
 	"strings"
@@ -35,89 +33,12 @@ import (
 	etcdutil "k8s.io/kubernetes/pkg/storage/etcd/util"
 	"k8s.io/kubernetes/pkg/util"
 	utilcache "k8s.io/kubernetes/pkg/util/cache"
-	utilnet "k8s.io/kubernetes/pkg/util/net"
 	"k8s.io/kubernetes/pkg/watch"
 
 	etcd "github.com/coreos/etcd/client"
-	"github.com/coreos/etcd/pkg/transport"
 	"github.com/golang/glog"
 	"golang.org/x/net/context"
 )
-
-// storage.Config object for etcd.
-type EtcdStorageConfig struct {
-	Config EtcdConfig
-	Codec  runtime.Codec
-}
-
-// implements storage.Config
-func (c *EtcdStorageConfig) GetType() string {
-	return "etcd"
-}
-
-// implements storage.Config
-func (c *EtcdStorageConfig) NewStorage() (storage.Interface, error) {
-	etcdClient, err := c.Config.newEtcdClient()
-	if err != nil {
-		return nil, err
-	}
-	return NewEtcdStorage(etcdClient, c.Codec, c.Config.Prefix, c.Config.Quorum, c.Config.DeserializationCacheSize), nil
-}
-
-// Configuration object for constructing etcd.Config
-type EtcdConfig struct {
-	Prefix                   string
-	ServerList               []string
-	KeyFile                  string
-	CertFile                 string
-	CAFile                   string
-	Quorum                   bool
-	DeserializationCacheSize int
-}
-
-func (c *EtcdConfig) newEtcdClient() (etcd.Client, error) {
-	t, err := c.newHttpTransport()
-	if err != nil {
-		return nil, err
-	}
-
-	cli, err := etcd.New(etcd.Config{
-		Endpoints: c.ServerList,
-		Transport: t,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	return cli, nil
-}
-
-func (c *EtcdConfig) newHttpTransport() (*http.Transport, error) {
-	info := transport.TLSInfo{
-		CertFile: c.CertFile,
-		KeyFile:  c.KeyFile,
-		CAFile:   c.CAFile,
-	}
-	cfg, err := info.ClientConfig()
-	if err != nil {
-		return nil, err
-	}
-
-	// Copied from etcd.DefaultTransport declaration.
-	// TODO: Determine if transport needs optimization
-	tr := utilnet.SetTransportDefaults(&http.Transport{
-		Proxy: http.ProxyFromEnvironment,
-		Dial: (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).Dial,
-		TLSHandshakeTimeout: 10 * time.Second,
-		MaxIdleConnsPerHost: 500,
-		TLSClientConfig:     cfg,
-	})
-
-	return tr, nil
-}
 
 // Creates a new storage interface from the client
 // TODO: deprecate in favor of storage.Config abstraction over time
@@ -215,8 +136,8 @@ func (h *etcdHelper) Create(ctx context.Context, key string, obj, out runtime.Ob
 		PrevExist: etcd.PrevNoExist,
 	}
 	response, err := h.etcdKeysAPI.Set(ctx, key, string(data), &opts)
-	metrics.RecordEtcdRequestLatency("create", getTypeName(obj), startTime)
 	trace.Step("Object created")
+	metrics.RecordEtcdRequestLatency("create", getTypeName(obj), startTime)
 	if err != nil {
 		return toStorageErr(err, key, 0)
 	}
@@ -302,7 +223,7 @@ func (h *etcdHelper) Delete(ctx context.Context, key string, out runtime.Object,
 }
 
 // Implements storage.Interface.
-func (h *etcdHelper) Watch(ctx context.Context, key string, resourceVersion string, filter storage.FilterFunc) (watch.Interface, error) {
+func (h *etcdHelper) Watch(ctx context.Context, key string, resourceVersion string, filter storage.Filter) (watch.Interface, error) {
 	if ctx == nil {
 		glog.Errorf("Context is nil")
 	}
@@ -317,7 +238,7 @@ func (h *etcdHelper) Watch(ctx context.Context, key string, resourceVersion stri
 }
 
 // Implements storage.Interface.
-func (h *etcdHelper) WatchList(ctx context.Context, key string, resourceVersion string, filter storage.FilterFunc) (watch.Interface, error) {
+func (h *etcdHelper) WatchList(ctx context.Context, key string, resourceVersion string, filter storage.Filter) (watch.Interface, error) {
 	if ctx == nil {
 		glog.Errorf("Context is nil")
 	}
@@ -397,7 +318,7 @@ func (h *etcdHelper) extractObj(response *etcd.Response, inErr error, objPtr run
 }
 
 // Implements storage.Interface.
-func (h *etcdHelper) GetToList(ctx context.Context, key string, filter storage.FilterFunc, listObj runtime.Object) error {
+func (h *etcdHelper) GetToList(ctx context.Context, key string, filter storage.Filter, listObj runtime.Object) error {
 	if ctx == nil {
 		glog.Errorf("Context is nil")
 	}
@@ -414,9 +335,8 @@ func (h *etcdHelper) GetToList(ctx context.Context, key string, filter storage.F
 		Quorum: h.quorum,
 	}
 	response, err := h.etcdKeysAPI.Get(ctx, key, opts)
-
-	metrics.RecordEtcdRequestLatency("get", getTypeName(listPtr), startTime)
 	trace.Step("Etcd node read")
+	metrics.RecordEtcdRequestLatency("get", getTypeName(listPtr), startTime)
 	if err != nil {
 		if etcdutil.IsEtcdNotFound(err) {
 			return nil
@@ -438,9 +358,9 @@ func (h *etcdHelper) GetToList(ctx context.Context, key string, filter storage.F
 }
 
 // decodeNodeList walks the tree of each node in the list and decodes into the specified object
-func (h *etcdHelper) decodeNodeList(nodes []*etcd.Node, filter storage.FilterFunc, slicePtr interface{}) error {
+func (h *etcdHelper) decodeNodeList(nodes []*etcd.Node, filter storage.Filter, slicePtr interface{}) error {
 	trace := util.NewTrace("decodeNodeList " + getTypeName(slicePtr))
-	defer trace.LogIfLong(500 * time.Millisecond)
+	defer trace.LogIfLong(400 * time.Millisecond)
 	v, err := conversion.EnforcePtr(slicePtr)
 	if err != nil || v.Kind() != reflect.Slice {
 		// This should not happen at runtime.
@@ -467,7 +387,7 @@ func (h *etcdHelper) decodeNodeList(nodes []*etcd.Node, filter storage.FilterFun
 			}
 			// being unable to set the version does not prevent the object from being extracted
 			_ = h.versioner.UpdateObject(obj, node.ModifiedIndex)
-			if filter(obj) {
+			if filter.Filter(obj) {
 				v.Set(reflect.Append(v, reflect.ValueOf(obj).Elem()))
 			}
 			if node.ModifiedIndex != 0 {
@@ -480,12 +400,12 @@ func (h *etcdHelper) decodeNodeList(nodes []*etcd.Node, filter storage.FilterFun
 }
 
 // Implements storage.Interface.
-func (h *etcdHelper) List(ctx context.Context, key string, resourceVersion string, filter storage.FilterFunc, listObj runtime.Object) error {
+func (h *etcdHelper) List(ctx context.Context, key string, resourceVersion string, filter storage.Filter, listObj runtime.Object) error {
 	if ctx == nil {
 		glog.Errorf("Context is nil")
 	}
 	trace := util.NewTrace("List " + getTypeName(listObj))
-	defer trace.LogIfLong(time.Second)
+	defer trace.LogIfLong(400 * time.Millisecond)
 	listPtr, err := meta.GetItemsPtr(listObj)
 	if err != nil {
 		return err
@@ -494,8 +414,8 @@ func (h *etcdHelper) List(ctx context.Context, key string, resourceVersion strin
 	startTime := time.Now()
 	trace.Step("About to list etcd node")
 	nodes, index, err := h.listEtcdNode(ctx, key)
-	metrics.RecordEtcdRequestLatency("list", getTypeName(listPtr), startTime)
 	trace.Step("Etcd node listed")
+	metrics.RecordEtcdRequestLatency("list", getTypeName(listPtr), startTime)
 	if err != nil {
 		return err
 	}
@@ -649,7 +569,7 @@ func (h *etcdHelper) prefixEtcdKey(key string) string {
 // their Node.ModifiedIndex, which is unique across all types.
 // All implementations must be thread-safe.
 type etcdCache interface {
-	getFromCache(index uint64, filter storage.FilterFunc) (runtime.Object, bool)
+	getFromCache(index uint64, filter storage.Filter) (runtime.Object, bool)
 	addToCache(index uint64, obj runtime.Object)
 }
 
@@ -657,14 +577,14 @@ func getTypeName(obj interface{}) string {
 	return reflect.TypeOf(obj).String()
 }
 
-func (h *etcdHelper) getFromCache(index uint64, filter storage.FilterFunc) (runtime.Object, bool) {
+func (h *etcdHelper) getFromCache(index uint64, filter storage.Filter) (runtime.Object, bool) {
 	startTime := time.Now()
 	defer func() {
 		metrics.ObserveGetCache(startTime)
 	}()
 	obj, found := h.cache.Get(index)
 	if found {
-		if !filter(obj.(runtime.Object)) {
+		if !filter.Filter(obj.(runtime.Object)) {
 			return nil, true
 		}
 		// We should not return the object itself to avoid polluting the cache if someone

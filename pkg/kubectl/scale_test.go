@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -30,27 +30,36 @@ import (
 
 type ErrorReplicationControllers struct {
 	testclient.FakeReplicationControllers
-	invalid bool
+	conflict bool
+	invalid  bool
 }
 
 func (c *ErrorReplicationControllers) Update(controller *api.ReplicationController) (*api.ReplicationController, error) {
-	if c.invalid {
+	switch {
+	case c.invalid:
 		return nil, kerrors.NewInvalid(api.Kind(controller.Kind), controller.Name, nil)
+	case c.conflict:
+		return nil, kerrors.NewConflict(api.Resource(controller.Kind), controller.Name, nil)
 	}
 	return nil, errors.New("Replication controller update failure")
 }
 
 type ErrorReplicationControllerClient struct {
 	testclient.Fake
-	invalid bool
+	conflict bool
+	invalid  bool
 }
 
 func (c *ErrorReplicationControllerClient) ReplicationControllers(namespace string) client.ReplicationControllerInterface {
-	return &ErrorReplicationControllers{testclient.FakeReplicationControllers{Fake: &c.Fake, Namespace: namespace}, c.invalid}
+	return &ErrorReplicationControllers{
+		FakeReplicationControllers: testclient.FakeReplicationControllers{Fake: &c.Fake, Namespace: namespace},
+		conflict:                   c.conflict,
+		invalid:                    c.invalid,
+	}
 }
 
 func TestReplicationControllerScaleRetry(t *testing.T) {
-	fake := &ErrorReplicationControllerClient{Fake: testclient.Fake{}, invalid: false}
+	fake := &ErrorReplicationControllerClient{Fake: testclient.Fake{}, conflict: true}
 	scaler := ReplicationControllerScaler{fake}
 	preconditions := ScalePrecondition{-1, ""}
 	count := uint(3)
@@ -63,7 +72,7 @@ func TestReplicationControllerScaleRetry(t *testing.T) {
 		t.Errorf("Expected an update failure to return pass = false, got pass = %v", pass)
 	}
 	if err != nil {
-		t.Errorf("Did not expect an error on update failure, got %v", err)
+		t.Errorf("Did not expect an error on update conflict failure, got %v", err)
 	}
 	preconditions = ScalePrecondition{3, ""}
 	scaleFunc = ScaleCondition(&scaler, &preconditions, namespace, name, count)
@@ -87,7 +96,7 @@ func TestReplicationControllerScaleInvalid(t *testing.T) {
 		t.Errorf("Expected an update failure to return pass = false, got pass = %v", pass)
 	}
 	e, ok := err.(ScaleError)
-	if err == nil || !ok || e.FailureType != ScaleUpdateInvalidFailure {
+	if err == nil || !ok || e.FailureType != ScaleUpdateFailure {
 		t.Errorf("Expected error on invalid update failure, got %v", err)
 	}
 }
@@ -107,7 +116,7 @@ func TestReplicationControllerScale(t *testing.T) {
 	if action, ok := actions[0].(testclient.GetAction); !ok || action.GetResource() != "replicationcontrollers" || action.GetName() != name {
 		t.Errorf("unexpected action: %v, expected get-replicationController %s", actions[0], name)
 	}
-	if action, ok := actions[1].(testclient.UpdateAction); !ok || action.GetResource() != "replicationcontrollers" || action.GetObject().(*api.ReplicationController).Spec.Replicas != int(count) {
+	if action, ok := actions[1].(testclient.UpdateAction); !ok || action.GetResource() != "replicationcontrollers" || action.GetObject().(*api.ReplicationController).Spec.Replicas != int32(count) {
 		t.Errorf("unexpected action %v, expected update-replicationController with replicas = %d", actions[1], count)
 	}
 }
@@ -249,19 +258,23 @@ func TestValidateReplicationController(t *testing.T) {
 }
 
 type ErrorJobs struct {
-	testclient.FakeJobs
-	invalid bool
+	testclient.FakeJobsV1
+	conflict bool
+	invalid  bool
 }
 
 func (c *ErrorJobs) Update(job *batch.Job) (*batch.Job, error) {
-	if c.invalid {
-		return nil, kerrors.NewInvalid(batch.Kind(job.Kind), job.Name, nil)
+	switch {
+	case c.invalid:
+		return nil, kerrors.NewInvalid(api.Kind(job.Kind), job.Name, nil)
+	case c.conflict:
+		return nil, kerrors.NewConflict(api.Resource(job.Kind), job.Name, nil)
 	}
 	return nil, errors.New("Job update failure")
 }
 
 func (c *ErrorJobs) Get(name string) (*batch.Job, error) {
-	zero := 0
+	zero := int32(0)
 	return &batch.Job{
 		Spec: batch.JobSpec{
 			Parallelism: &zero,
@@ -270,16 +283,21 @@ func (c *ErrorJobs) Get(name string) (*batch.Job, error) {
 }
 
 type ErrorJobClient struct {
-	testclient.FakeExperimental
-	invalid bool
+	testclient.FakeBatch
+	conflict bool
+	invalid  bool
 }
 
 func (c *ErrorJobClient) Jobs(namespace string) client.JobInterface {
-	return &ErrorJobs{testclient.FakeJobs{Fake: &c.FakeExperimental, Namespace: namespace}, c.invalid}
+	return &ErrorJobs{
+		FakeJobsV1: testclient.FakeJobsV1{Fake: &c.FakeBatch, Namespace: namespace},
+		conflict:   c.conflict,
+		invalid:    c.invalid,
+	}
 }
 
 func TestJobScaleRetry(t *testing.T) {
-	fake := &ErrorJobClient{FakeExperimental: testclient.FakeExperimental{}, invalid: false}
+	fake := &ErrorJobClient{FakeBatch: testclient.FakeBatch{}, conflict: true}
 	scaler := JobScaler{fake}
 	preconditions := ScalePrecondition{-1, ""}
 	count := uint(3)
@@ -303,7 +321,7 @@ func TestJobScaleRetry(t *testing.T) {
 }
 
 func TestJobScale(t *testing.T) {
-	fake := &testclient.FakeExperimental{Fake: &testclient.Fake{}}
+	fake := &testclient.FakeBatch{Fake: &testclient.Fake{}}
 	scaler := JobScaler{fake}
 	preconditions := ScalePrecondition{-1, ""}
 	count := uint(3)
@@ -317,13 +335,13 @@ func TestJobScale(t *testing.T) {
 	if action, ok := actions[0].(testclient.GetAction); !ok || action.GetResource() != "jobs" || action.GetName() != name {
 		t.Errorf("unexpected action: %v, expected get-replicationController %s", actions[0], name)
 	}
-	if action, ok := actions[1].(testclient.UpdateAction); !ok || action.GetResource() != "jobs" || *action.GetObject().(*batch.Job).Spec.Parallelism != int(count) {
+	if action, ok := actions[1].(testclient.UpdateAction); !ok || action.GetResource() != "jobs" || *action.GetObject().(*batch.Job).Spec.Parallelism != int32(count) {
 		t.Errorf("unexpected action %v, expected update-job with parallelism = %d", actions[1], count)
 	}
 }
 
 func TestJobScaleInvalid(t *testing.T) {
-	fake := &ErrorJobClient{FakeExperimental: testclient.FakeExperimental{}, invalid: true}
+	fake := &ErrorJobClient{FakeBatch: testclient.FakeBatch{}, invalid: true}
 	scaler := JobScaler{fake}
 	preconditions := ScalePrecondition{-1, ""}
 	count := uint(3)
@@ -336,19 +354,19 @@ func TestJobScaleInvalid(t *testing.T) {
 		t.Errorf("Expected an update failure to return pass = false, got pass = %v", pass)
 	}
 	e, ok := err.(ScaleError)
-	if err == nil || !ok || e.FailureType != ScaleUpdateInvalidFailure {
+	if err == nil || !ok || e.FailureType != ScaleUpdateFailure {
 		t.Errorf("Expected error on invalid update failure, got %v", err)
 	}
 }
 
 func TestJobScaleFailsPreconditions(t *testing.T) {
-	ten := 10
+	ten := int32(10)
 	fake := testclient.NewSimpleFake(&batch.Job{
 		Spec: batch.JobSpec{
 			Parallelism: &ten,
 		},
 	})
-	scaler := JobScaler{&testclient.FakeExperimental{Fake: fake}}
+	scaler := JobScaler{&testclient.FakeBatch{Fake: fake}}
 	preconditions := ScalePrecondition{2, ""}
 	count := uint(3)
 	name := "foo"
@@ -364,7 +382,7 @@ func TestJobScaleFailsPreconditions(t *testing.T) {
 }
 
 func TestValidateJob(t *testing.T) {
-	zero, ten, twenty := 0, 10, 20
+	zero, ten, twenty := int32(0), int32(10), int32(20)
 	tests := []struct {
 		preconditions ScalePrecondition
 		job           batch.Job
@@ -491,12 +509,16 @@ func TestValidateJob(t *testing.T) {
 
 type ErrorDeployments struct {
 	testclient.FakeDeployments
-	invalid bool
+	conflict bool
+	invalid  bool
 }
 
 func (c *ErrorDeployments) Update(deployment *extensions.Deployment) (*extensions.Deployment, error) {
-	if c.invalid {
-		return nil, kerrors.NewInvalid(extensions.Kind(deployment.Kind), deployment.Name, nil)
+	switch {
+	case c.invalid:
+		return nil, kerrors.NewInvalid(api.Kind(deployment.Kind), deployment.Name, nil)
+	case c.conflict:
+		return nil, kerrors.NewConflict(api.Resource(deployment.Kind), deployment.Name, nil)
 	}
 	return nil, errors.New("deployment update failure")
 }
@@ -511,15 +533,20 @@ func (c *ErrorDeployments) Get(name string) (*extensions.Deployment, error) {
 
 type ErrorDeploymentClient struct {
 	testclient.FakeExperimental
-	invalid bool
+	conflict bool
+	invalid  bool
 }
 
 func (c *ErrorDeploymentClient) Deployments(namespace string) client.DeploymentInterface {
-	return &ErrorDeployments{testclient.FakeDeployments{Fake: &c.FakeExperimental, Namespace: namespace}, c.invalid}
+	return &ErrorDeployments{
+		FakeDeployments: testclient.FakeDeployments{Fake: &c.FakeExperimental, Namespace: namespace},
+		invalid:         c.invalid,
+		conflict:        c.conflict,
+	}
 }
 
 func TestDeploymentScaleRetry(t *testing.T) {
-	fake := &ErrorDeploymentClient{FakeExperimental: testclient.FakeExperimental{Fake: &testclient.Fake{}}, invalid: false}
+	fake := &ErrorDeploymentClient{FakeExperimental: testclient.FakeExperimental{}, conflict: true}
 	scaler := &DeploymentScaler{fake}
 	preconditions := &ScalePrecondition{-1, ""}
 	count := uint(3)
@@ -557,13 +584,13 @@ func TestDeploymentScale(t *testing.T) {
 	if action, ok := actions[0].(testclient.GetAction); !ok || action.GetResource() != "deployments" || action.GetName() != name {
 		t.Errorf("unexpected action: %v, expected get-replicationController %s", actions[0], name)
 	}
-	if action, ok := actions[1].(testclient.UpdateAction); !ok || action.GetResource() != "deployments" || action.GetObject().(*extensions.Deployment).Spec.Replicas != int(count) {
+	if action, ok := actions[1].(testclient.UpdateAction); !ok || action.GetResource() != "deployments" || action.GetObject().(*extensions.Deployment).Spec.Replicas != int32(count) {
 		t.Errorf("unexpected action %v, expected update-deployment with replicas = %d", actions[1], count)
 	}
 }
 
 func TestDeploymentScaleInvalid(t *testing.T) {
-	fake := &ErrorDeploymentClient{FakeExperimental: testclient.FakeExperimental{Fake: &testclient.Fake{}}, invalid: true}
+	fake := &ErrorDeploymentClient{FakeExperimental: testclient.FakeExperimental{}, invalid: true}
 	scaler := DeploymentScaler{fake}
 	preconditions := ScalePrecondition{-1, ""}
 	count := uint(3)
@@ -576,7 +603,7 @@ func TestDeploymentScaleInvalid(t *testing.T) {
 		t.Errorf("Expected an update failure to return pass = false, got pass = %v", pass)
 	}
 	e, ok := err.(ScaleError)
-	if err == nil || !ok || e.FailureType != ScaleUpdateInvalidFailure {
+	if err == nil || !ok || e.FailureType != ScaleUpdateFailure {
 		t.Errorf("Expected error on invalid update failure, got %v", err)
 	}
 }
@@ -603,7 +630,7 @@ func TestDeploymentScaleFailsPreconditions(t *testing.T) {
 }
 
 func TestValidateDeployment(t *testing.T) {
-	zero, ten, twenty := 0, 10, 20
+	zero, ten, twenty := int32(0), int32(10), int32(20)
 	tests := []struct {
 		preconditions ScalePrecondition
 		deployment    extensions.Deployment

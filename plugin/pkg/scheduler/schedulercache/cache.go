@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -35,14 +35,14 @@ var (
 // It automatically starts a go routine that manages expiration of assumed pods.
 // "ttl" is how long the assumed pod will get expired.
 // "stop" is the channel that would close the background goroutine.
-func New(ttl time.Duration, stop chan struct{}) Cache {
+func New(ttl time.Duration, stop <-chan struct{}) Cache {
 	cache := newSchedulerCache(ttl, cleanAssumedPeriod, stop)
 	cache.run()
 	return cache
 }
 
 type schedulerCache struct {
-	stop   chan struct{}
+	stop   <-chan struct{}
 	ttl    time.Duration
 	period time.Duration
 
@@ -62,7 +62,7 @@ type podState struct {
 	deadline *time.Time
 }
 
-func newSchedulerCache(ttl, period time.Duration, stop chan struct{}) *schedulerCache {
+func newSchedulerCache(ttl, period time.Duration, stop <-chan struct{}) *schedulerCache {
 	return &schedulerCache{
 		ttl:    ttl,
 		period: period,
@@ -74,14 +74,20 @@ func newSchedulerCache(ttl, period time.Duration, stop chan struct{}) *scheduler
 	}
 }
 
-func (cache *schedulerCache) GetNodeNameToInfoMap() (map[string]*NodeInfo, error) {
-	nodeNameToInfo := make(map[string]*NodeInfo)
+func (cache *schedulerCache) UpdateNodeNameToInfoMap(nodeNameToInfo map[string]*NodeInfo) error {
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 	for name, info := range cache.nodes {
-		nodeNameToInfo[name] = info.Clone()
+		if current, ok := nodeNameToInfo[name]; !ok || current.generation != info.generation {
+			nodeNameToInfo[name] = info.Clone()
+		}
 	}
-	return nodeNameToInfo, nil
+	for name := range nodeNameToInfo {
+		if _, ok := cache.nodes[name]; !ok {
+			delete(nodeNameToInfo, name)
+		}
+	}
+	return nil
 }
 
 func (cache *schedulerCache) List(selector labels.Selector) ([]*api.Pod, error) {
@@ -123,6 +129,31 @@ func (cache *schedulerCache) assumePod(pod *api.Pod, now time.Time) error {
 	}
 	cache.podStates[key] = ps
 	cache.assumedPods[key] = true
+	return nil
+}
+
+func (cache *schedulerCache) ForgetPod(pod *api.Pod) error {
+	key, err := getPodKey(pod)
+	if err != nil {
+		return err
+	}
+
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+
+	_, ok := cache.podStates[key]
+	switch {
+	// Only assumed pod can be forgotten.
+	case ok && cache.assumedPods[key]:
+		err := cache.removePod(pod)
+		if err != nil {
+			return err
+		}
+		delete(cache.assumedPods, key)
+		delete(cache.podStates, key)
+	default:
+		return fmt.Errorf("pod state wasn't assumed but get forgotten. Pod key: %v", key)
+	}
 	return nil
 }
 
